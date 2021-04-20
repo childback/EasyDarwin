@@ -9,14 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/penggy/EasyGoLib/db"
+	"github.com/childback/EasyDarwin/EasyGoLib/db"
 
-	"github.com/EasyDarwin/EasyDarwin/models"
-	"github.com/EasyDarwin/EasyDarwin/routers"
-	"github.com/EasyDarwin/EasyDarwin/rtsp"
+	"github.com/childback/EasyDarwin/models"
+	"github.com/childback/EasyDarwin/routers"
+	"github.com/childback/EasyDarwin/rtsp"
 	figure "github.com/common-nighthawk/go-figure"
-	"github.com/penggy/EasyGoLib/utils"
-	"github.com/penggy/service"
+	"github.com/childback/EasyDarwin/EasyGoLib/utils"
+	"github.com/childback/EasyDarwin/service"
 )
 
 var (

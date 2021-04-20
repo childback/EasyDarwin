@@ -11,7 +11,7 @@
   "keywords": [
     "EasyDarwin"
   ],
-  "author": "penggy",
+  "author": "EasyDarwin/EasyDarwin",
   "license": "ISC",
   "devDependencies": {
     "admin-lte": "2.4.3",

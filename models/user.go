@@ -1,8 +1,8 @@
 package models
 
 import (
+	"github.com/childback/EasyDarwin/EasyGoLib/utils"
 	"github.com/jinzhu/gorm"
-	"github.com/penggy/EasyGoLib/utils"
 )
 
 type User struct {

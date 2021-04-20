@@ -26,7 +26,7 @@
 
 ## 安装部署
 
-- [下载解压 release 包](https://github.com/EasyDarwin/EasyDarwin/releases)
+- [下载解压 release 包](https://github.com/childback/EasyDarwin/releases)
 
 - 直接运行(Windows)
 
@@ -79,7 +79,7 @@
 
         # go tools
         go get -u -v github.com/kardianos/govendor
-        go get -u -v github.com/penggy/gobuild
+        go get -u -v github.com/childback/EasyDarwin/gobuild
 
         # npm tools
         npm i -g apidoc
@@ -92,7 +92,7 @@
 
         cd $GOPATH/src/github.com
         mkdir EasyDarwin && cd EasyDarwin
-        git clone https://github.com/EasyDarwin/EasyDarwin.git --depth=1 EasyDarwin
+        git clone https://github.com/childback/EasyDarwin.git --depth=1 EasyDarwin
         cd EasyDarwin
 
 - 以开发模式运行
@@ -124,7 +124,7 @@
 - 打包 Pack
 
         # install pack
-        npm i -g @penggy/pack
+        npm i -g @EasyDarwin/EasyDarwin/pack
 
         # for windows
         npm run build:win

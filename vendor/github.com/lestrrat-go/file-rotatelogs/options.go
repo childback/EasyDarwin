@@ -8,10 +8,13 @@ import (
 
 const (
 	optkeyClock         = "clock"
+	optkeyHandler       = "handler"
 	optkeyLinkName      = "link-name"
 	optkeyMaxAge        = "max-age"
 	optkeyRotationTime  = "rotation-time"
+	optkeyRotationSize  = "rotation-size"
 	optkeyRotationCount = "rotation-count"
+	optkeyForceNewFile  = "force-new-file"
 )
 
 // WithClock creates a new Option that sets a clock
@@ -58,9 +61,29 @@ func WithRotationTime(d time.Duration) Option {
 	return option.New(optkeyRotationTime, d)
 }
 
+// WithRotationSize creates a new Option that sets the
+// log file size between rotation.
+func WithRotationSize(s int64) Option {
+	return option.New(optkeyRotationSize, s)
+}
+
 // WithRotationCount creates a new Option that sets the
 // number of files should be kept before it gets
 // purged from the file system.
 func WithRotationCount(n uint) Option {
 	return option.New(optkeyRotationCount, n)
+}
+
+// WithHandler creates a new Option that specifies the
+// Handler object that gets invoked when an event occurs.
+// Currently `FileRotated` event is supported
+func WithHandler(h Handler) Option {
+	return option.New(optkeyHandler, h)
+}
+
+// ForceNewFile ensures a new file is created every time New()
+// is called. If the base file name already exists, an implicit 
+// rotation is performed
+func ForceNewFile() Option {
+	return option.New(optkeyForceNewFile, true)
 }

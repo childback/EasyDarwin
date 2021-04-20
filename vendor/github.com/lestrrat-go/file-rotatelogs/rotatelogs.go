@@ -37,9 +37,12 @@ func New(p string, options ...Option) (*RotateLogs, error) {
 
 	var clock Clock = Local
 	rotationTime := 24 * time.Hour
+	var rotationSize int64
 	var rotationCount uint
 	var linkName string
 	var maxAge time.Duration
+	var handler Handler
+	var forceNewFile bool
 
 	for _, o := range options {
 		switch o.Name() {
@@ -57,8 +60,17 @@ func New(p string, options ...Option) (*RotateLogs, error) {
 			if rotationTime < 0 {
 				rotationTime = 0
 			}
+		case optkeyRotationSize:
+			rotationSize = o.Value().(int64)
+			if rotationSize < 0 {
+				rotationSize = 0
+			}
 		case optkeyRotationCount:
 			rotationCount = o.Value().(uint)
+		case optkeyHandler:
+			handler = o.Value().(Handler)
+		case optkeyForceNewFile:
+			forceNewFile = true
 		}
 	}
 
@@ -73,20 +85,40 @@ func New(p string, options ...Option) (*RotateLogs, error) {
 
 	return &RotateLogs{
 		clock:         clock,
+		eventHandler:  handler,
 		globPattern:   globPattern,
 		linkName:      linkName,
 		maxAge:        maxAge,
 		pattern:       pattern,
 		rotationTime:  rotationTime,
+		rotationSize: rotationSize,
 		rotationCount: rotationCount,
+		forceNewFile:  forceNewFile,
 	}, nil
 }
 
 func (rl *RotateLogs) genFilename() string {
 	now := rl.clock.Now()
-	diff := time.Duration(now.UnixNano()) % rl.rotationTime
-	t := now.Add(time.Duration(-1 * diff))
-	return rl.pattern.FormatString(t)
+
+	// XXX HACK: Truncate only happens in UTC semantics, apparently.
+	// observed values for truncating given time with 86400 secs:
+	//
+	// before truncation: 2018/06/01 03:54:54 2018-06-01T03:18:00+09:00
+	// after  truncation: 2018/06/01 03:54:54 2018-05-31T09:00:00+09:00
+	//
+	// This is really annoying when we want to truncate in local time
+	// so we hack: we take the apparent local time in the local zone,
+	// and pretend that it's in UTC. do our math, and put it back to
+	// the local zone
+	var base time.Time
+	if now.Location() != time.UTC {
+		base = time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), now.Minute(), now.Second(), now.Nanosecond(), time.UTC)
+		base = base.Truncate(time.Duration(rl.rotationTime))
+		base = time.Date(base.Year(), base.Month(), base.Day(), base.Hour(), base.Minute(), base.Second(), base.Nanosecond(), base.Location())
+	} else {
+		base = now.Truncate(time.Duration(rl.rotationTime))
+	}
+	return rl.pattern.FormatString(base)
 }
 
 // Write satisfies the io.Writer interface. It writes to the
@@ -98,7 +130,7 @@ func (rl *RotateLogs) Write(p []byte) (n int, err error) {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
 
-	out, err := rl.getWriter_nolock(false)
+	out, err := rl.getWriter_nolock(false, false)
 	if err != nil {
 		return 0, errors.Wrap(err, `failed to acquite target io.Writer`)
 	}
@@ -107,15 +139,61 @@ func (rl *RotateLogs) Write(p []byte) (n int, err error) {
 }
 
 // must be locked during this operation
-func (rl *RotateLogs) getWriter_nolock(bailOnRotateFail bool) (io.Writer, error) {
+func (rl *RotateLogs) getWriter_nolock(bailOnRotateFail, useGenerationalNames bool) (io.Writer, error) {
+	generation := rl.generation
+	previousFn := rl.curFn
 	// This filename contains the name of the "NEW" filename
 	// to log to, which may be newer than rl.currentFilename
-	filename := rl.genFilename()
-	if rl.curFn == filename {
-		// nothing to do
-		return rl.outFh, nil
+	baseFn := rl.genFilename()
+	filename := baseFn
+	var forceNewFile bool
+
+	fi, err := os.Stat(rl.curFn)
+	sizeRotation := false
+	if err == nil && rl.rotationSize > 0 && rl.rotationSize <= fi.Size() {
+		forceNewFile = true
+		sizeRotation = true
 	}
 
+	if baseFn != rl.curBaseFn {
+		generation = 0
+		// even though this is the first write after calling New(),
+		// check if a new file needs to be created
+		if rl.forceNewFile {
+			forceNewFile = true
+		}
+	} else {
+		if !useGenerationalNames && !sizeRotation {
+			// nothing to do
+			return rl.outFh, nil
+		}
+		forceNewFile = true
+		generation++
+	}
+	if forceNewFile {
+		// A new file has been requested. Instead of just using the
+		// regular strftime pattern, we create a new file name using
+		// generational names such as "foo.1", "foo.2", "foo.3", etc
+		var name string
+		for {
+			if generation == 0 {
+				name = filename
+			} else {
+				name = fmt.Sprintf("%s.%d", filename, generation)
+			}
+			if _, err := os.Stat(name); err != nil {
+				filename = name
+				break
+			}
+			generation++
+		}
+	}
+	// make sure the dir is existed, eg:
+	// ./foo/bar/baz/hello.log must make sure ./foo/bar/baz is existed
+	dirname := filepath.Dir(filename)
+	if err := os.MkdirAll(dirname, 0755); err != nil {
+		return nil, errors.Wrapf(err, "failed to create directory %s", dirname)
+	}
 	// if we got here, then we need to create a file
 	fh, err := os.OpenFile(filename, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
@@ -128,7 +206,13 @@ func (rl *RotateLogs) getWriter_nolock(bailOnRotateFail bool) (io.Writer, error)
 			// Failure to rotate is a problem, but it's really not a great
 			// idea to stop your application just because you couldn't rename
 			// your log.
-			// We only return this error when explicitly needed.
+			//
+			// We only return this error when explicitly needed (as specified by bailOnRotateFail)
+			//
+			// However, we *NEED* to close `fh` here
+			if fh != nil { // probably can't happen, but being paranoid
+				fh.Close()
+			}
 			return nil, err
 		}
 		fmt.Fprintf(os.Stderr, "%s\n", err.Error())
@@ -136,8 +220,16 @@ func (rl *RotateLogs) getWriter_nolock(bailOnRotateFail bool) (io.Writer, error)
 
 	rl.outFh.Close()
 	rl.outFh = fh
+	rl.curBaseFn = baseFn
 	rl.curFn = filename
+	rl.generation = generation
 
+	if h := rl.eventHandler; h != nil {
+		go h.Handle(&FileRotatedEvent{
+			prev:    previousFn,
+			current: filename,
+		})
+	}
 	return fh, nil
 }
 
@@ -169,11 +261,17 @@ func (g *cleanupGuard) Run() {
 	g.fn()
 }
 
-// Rotate forcefully rotates the log files.
+// Rotate forcefully rotates the log files. If the generated file name
+// clash because file already exists, a numeric suffix of the form
+// ".1", ".2", ".3" and so forth are appended to the end of the log file
+//
+// Thie method can be used in conjunction with a signal handler so to
+// emulate servers that generate new log files when they receive a
+// SIGHUP
 func (rl *RotateLogs) Rotate() error {
 	rl.mutex.Lock()
 	defer rl.mutex.Unlock()
-	if _, err := rl.getWriter_nolock(true); err != nil {
+	if _, err := rl.getWriter_nolock(true, true); err != nil {
 		return err
 	}
 	return nil
@@ -196,8 +294,34 @@ func (rl *RotateLogs) rotate_nolock(filename string) error {
 
 	if rl.linkName != "" {
 		tmpLinkName := filename + `_symlink`
-		if err := os.Symlink(filename, tmpLinkName); err != nil {
+
+		// Change how the link name is generated based on where the
+		// target location is. if the location is directly underneath
+		// the main filename's parent directory, then we create a
+		// symlink with a relative path
+		linkDest := filename
+		linkDir := filepath.Dir(rl.linkName)
+
+		baseDir := filepath.Dir(filename)
+		if strings.Contains(rl.linkName, baseDir) {
+			tmp, err := filepath.Rel(linkDir, filename)
+			if err != nil {
+				return errors.Wrapf(err, `failed to evaluate relative path from %#v to %#v`, baseDir, rl.linkName)
+			}
+
+			linkDest = tmp
+		}
+
+		if err := os.Symlink(linkDest, tmpLinkName); err != nil {
 			return errors.Wrap(err, `failed to create new symlink`)
+		}
+
+		// the directory where rl.linkName should be created must exist
+		_, err := os.Stat(linkDir)
+		if err != nil { // Assume err != nil means the directory doesn't exist
+			if err := os.MkdirAll(linkDir, 0755); err != nil {
+				return errors.Wrapf(err, `failed to create directory %s`, linkDir)
+			}
 		}
 
 		if err := os.Rename(tmpLinkName, rl.linkName); err != nil {
